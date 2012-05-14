@@ -1,0 +1,741 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Panel xmlns:mx="http://www.adobe.com/2006/mxml" xmlns:com="*"
+	layout="vertical" width="100%" minWidth="400" height="100%" minHeight="200"
+	creationComplete="initCom()" backgroundColor="#323131" alpha="1.0" borderColor="#181818" borderThickness="0" borderStyle="outset" color="#9BDFED">
+	
+	<mx:Metadata>
+		[Event(name="uploadComplete", type="flash.events.Event")]
+		[Event(name="uploadProgress", type="flash.events.ProgressEvent")]
+		[Event(name="uploadCancel", type="flash.events.Event")]
+		[Event(name="uploadIOError", type="flash.events.IOErrorEvent")]
+		[Event(name="uploadSecurityError", type="flash.events.SecurityErrorEvent")]
+	</mx:Metadata>
+
+	<mx:Script>
+		<![CDATA[
+			
+			/*
+				
+			Modified code written originally by			
+			Dustin Andrew	www.flash-dev.com 12/15/06
+			
+			FileUpload			
+			Panel component for uploading files.
+			(Icons from http://www.famfamfam.com)
+			
+			*/
+			
+			import mx.controls.*;
+			import mx.managers.*;
+            import mx.events.*;
+			import flash.events.*;
+			import flash.net.*;
+			import mx.rpc.events.ResultEvent;
+            import mx.rpc.events.FaultEvent;
+            import mx.core.IUIComponent;
+            
+			private const _strDomain:        String = new String("http://platypo.us:8010/");
+			private const downloadScript:    String = new String(_strDomain + 'video/converter/scripts/download.php');
+			private const downloadDirectory: String = new String(_strDomain + 'download/');
+			
+			private var _strUploadUrl:String;
+			private var _refAddFiles:FileReferenceList;	
+			private var _refUploadFile:FileReference;
+			private var _arrUploadFiles:Array;
+			private var _numCurrentUpload:Number = 0;			
+			private var guid:String;					
+			private var timer:Timer;
+			private var loader:URLLoader;
+			private var streamer:URLStream = new URLStream();
+			private var byteInfo:String;
+			//private var lineArray:Array;
+			private var line:String;
+			private var ba:ByteArray = new ByteArray();
+			private var lastNewLine:int;
+			private var lastFrame:int;
+			private var lastBitRate:int;
+			private var lastTime:int;
+			private var interval:int;
+			private var interval2:int;
+			private var lastPosition:int = 0;
+			private var encodeDone:Boolean;
+			
+			private var minisec:int;
+			private var seconds:int;
+			private var minutes:int;
+			private var hours:int;
+			private var durationInSec:Number;
+			
+			//var pattern:RegExp = new RegExp("/^frame=/", "i");
+			
+			
+			// Set uploadUrl
+			public function set uploadUrl(strUploadUrl:String):void {
+				_strUploadUrl = strUploadUrl;
+			}
+			
+			// Initalize
+			private function initCom():void {
+				_arrUploadFiles = new Array();				
+				enableUI();
+				uploadCheck();
+				guid = parentDocument.makeGUID();
+				//_strDownload = parentDocument.valueOf(_strDownload);				
+			}
+			
+			// Called to add file(s) for upload
+			private function addFiles():void {
+				_refAddFiles = new FileReferenceList();
+				_refAddFiles.addEventListener(Event.SELECT, onSelectFile);
+				_refAddFiles.browse();
+			}
+			
+			// Called when a file is selected
+			private function onSelectFile(event:Event):void {
+				var arrFoundList:Array = new Array();
+				// Get list of files from fileList, make list of files already on upload list
+				for (var i:Number = 0; i < _arrUploadFiles.length; i++) {
+					for (var j:Number = 0; j < _refAddFiles.fileList.length; j++) {
+						if (_arrUploadFiles[i].name == _refAddFiles.fileList[j].name) {
+							arrFoundList.push(_refAddFiles.fileList[j].name);
+							_refAddFiles.fileList.splice(j, 1);
+							j--;
+						}
+					}
+				}
+				if (_refAddFiles.fileList.length >= 1) {				
+					for (var k:Number = 0; k < _refAddFiles.fileList.length; k++) {
+						_arrUploadFiles.push({
+							name:_refAddFiles.fileList[k].name,
+							size:formatFileSize(_refAddFiles.fileList[k].size),
+							file:_refAddFiles.fileList[k]});
+					}
+					listFiles.dataProvider = _arrUploadFiles;
+					listFiles.selectedIndex = _arrUploadFiles.length - 1;
+				}				
+				if (arrFoundList.length >= 1) {
+					Alert.show("The file(s): \n\n• " + arrFoundList.join("\n• ") + "\n\n...are already on the upload list. Please change the filename(s) or pick a different file.", "File(s) already on list");
+				}
+				updateProgBar();
+				scrollFiles();
+				uploadCheck();
+			}
+			
+			// Called to format number to file size
+			private function formatFileSize(numSize:Number):String {
+				var strReturn:String;
+				numSize = Number(numSize / 1000);
+				strReturn = String(numSize.toFixed(1) + " KB");
+				if (numSize > 1000) {
+					numSize = numSize / 1000;
+					strReturn = String(numSize.toFixed(1) + " MB");
+					if (numSize > 1000) {
+						numSize = numSize / 1000;
+						strReturn = String(numSize.toFixed(1) + " GB");
+					}
+				}				
+				return strReturn;
+			}
+			
+			// Called to remove selected file(s) for upload
+			private function removeFiles():void {
+				var arrSelected:Array = listFiles.selectedIndices;
+				if (arrSelected.length >= 1) {
+					for (var i:Number = 0; i < arrSelected.length; i++) {
+						_arrUploadFiles[Number(arrSelected[i])] = null;
+					}
+					for (var j:Number = 0; j < _arrUploadFiles.length; j++) {
+						if (_arrUploadFiles[j] == null) {
+							_arrUploadFiles.splice(j, 1);
+							j--;
+						}
+					}
+					listFiles.dataProvider = _arrUploadFiles;
+					listFiles.selectedIndex = 0;					
+				}
+				updateProgBar();
+				scrollFiles();
+				uploadCheck();
+			}
+			
+			// Called to check if there is at least one file to upload
+			private function uploadCheck():void {
+				if (_arrUploadFiles.length == 0) {
+					btnUpload.enabled = false;
+					listFiles.verticalScrollPolicy = "off";
+				} else {
+					btnUpload.enabled = true;
+					listFiles.verticalScrollPolicy = "on";
+				}
+			}
+			
+			// Disable UI control
+			private function disableUI():void {
+				btnAdd.enabled = false;
+				btnRemove.enabled = false;
+				btnUpload.enabled = false;
+				btnCancel.enabled = true;
+				listFiles.enabled = false;
+				listFiles.verticalScrollPolicy = "off";
+				
+				cbr.enabled = false;
+				interlace.enabled = false;
+				bitrate.enabled = false;
+				format.enabled = false;
+				
+			}
+			
+			// Enable UI control
+			private function enableUI():void {
+				btnAdd.enabled = true;
+				btnRemove.enabled = true;
+				btnUpload.enabled = true;
+				btnCancel.enabled = false;
+				listFiles.enabled = true;
+				listFiles.verticalScrollPolicy = "on";
+				
+				cbr.enabled = true;
+				interlace.enabled = true;
+				bitrate.enabled = true;
+				format.enabled = true;
+			}
+			
+			// Scroll listFiles to selected row
+			private function scrollFiles():void {
+				listFiles.verticalScrollPosition = listFiles.selectedIndex;
+				listFiles.validateNow();
+			}
+			
+			// Called to upload file based on current upload number
+			private function startUpload():void {
+				if (_arrUploadFiles.length > 0) {
+					
+					disableUI();
+					
+					listFiles.selectedIndex = _numCurrentUpload;
+					scrollFiles();
+					
+					_refUploadFile = new FileReference();
+					_refUploadFile = listFiles.selectedItem.file;
+					_refUploadFile.addEventListener(ProgressEvent.PROGRESS, onUploadProgress);
+				   	//_refUploadFile.addEventListener(Event.COMPLETE, onUploadComplete);
+				    _refUploadFile.addEventListener(IOErrorEvent.IO_ERROR, onUploadIoError);
+				  	_refUploadFile.addEventListener(SecurityErrorEvent.SECURITY_ERROR, onUploadSecurityError);
+				  	//_refUploadFile.addEventListener(DataEvent.UPLOAD_COMPLETE_DATA, onUploadCompleteData);
+					_refUploadFile.addEventListener(DataEvent.UPLOAD_COMPLETE_DATA, onUploadComplete);				
+					
+					// Variables to send along with upload
+					var sendVars:URLVariables = new URLVariables();
+					
+					sendVars.action = "upload";
+					sendVars.guid = guid;
+					sendVars.size = _refUploadFile.size;
+					trace(_refUploadFile.size);
+									
+					var request:URLRequest = new URLRequest();
+					
+					request.data = sendVars;
+				    request.url = _strUploadUrl;
+				    request.method = URLRequestMethod.POST;
+				    request.data = sendVars;
+				    
+				    			    
+				    try{
+				    	_refUploadFile.upload(request, "file", false);
+				    }
+				    catch (e:Error){
+				    	trace(e.errorID+": "+e.name+": "+e.message);
+				    }
+				}
+			}
+			     	
+        	
+			// Cancel and clear eventlisteners on last upload
+			private function clearUpload():void {
+				_refUploadFile.removeEventListener(ProgressEvent.PROGRESS, onUploadProgress);
+				//_refUploadFile.removeEventListener(Event.COMPLETE, onUploadComplete);
+				_refUploadFile.removeEventListener(DataEvent.UPLOAD_COMPLETE_DATA, onUploadComplete);
+				_refUploadFile.removeEventListener(IOErrorEvent.IO_ERROR, onUploadIoError);
+				_refUploadFile.removeEventListener(SecurityErrorEvent.SECURITY_ERROR, onUploadSecurityError);
+				//loader.removeEventListener(Event.COMPLETE, encodeResponse);
+				_refUploadFile.cancel();
+				_numCurrentUpload = 0;
+				updateProgBar();
+				enableUI();
+				guid = null;				
+				for ( var i:int = 0; i < _arrUploadFiles.length; i++ ){
+					_arrUploadFiles[i] = null;					
+				}				
+				resetEncodeData();
+				_refAddFiles=null;	
+				_refUploadFile=null;
+				_arrUploadFiles=null;
+				_numCurrentUpload=0;			
+				guid=null;					
+				timer=null;
+				loader=null;
+				streamer = new URLStream();;
+				byteInfo=null;
+
+				line=null;
+				ba= new ByteArray();;
+				lastNewLine=0;
+			 	lastFrame=0;
+				lastBitRate=0;
+				lastTime=0;
+				interval=0;
+				interval2=0;
+				lastPosition=0;
+				encodeDone=false;
+			
+				minisec=0;
+				seconds=0;
+				minutes=0;
+				hours=0;
+				durationInSec=0;
+				initCom();
+			}
+			
+			// Called on upload cancel
+			private function onUploadCanceled():void {
+				deleteTemp();
+				clearUpload();			
+				dispatchEvent(new Event("uploadCancel"));
+				progBar.label = "ENCODING CANCELED";
+			}
+			
+			private function deleteTemp():void{
+        			
+				var request:URLRequest = new URLRequest();
+				request.method = URLRequestMethod.GET;
+				request.url = downloadScript;
+				var requestVars:URLVariables = new URLVariables();
+			
+				requestVars.action = "delete";
+
+				requestVars.files = getFileString();
+				requestVars.format = this.format;
+
+				requestVars.guid = guid;
+				request.data = requestVars;
+			
+				var loader:URLLoader = new URLLoader();
+				loader.dataFormat = URLLoaderDataFormat.TEXT;
+				loader.addEventListener(Event.COMPLETE, deleteReqComplete);
+				loader.load(request);
+        	}
+			
+			private function deleteReqComplete(e:Event):void{
+				
+				var responseTxt:String = e.target.data;
+				trace( responseTxt);
+			
+				if (responseTxt == "deleted"){
+					progBar.label = "ENCODING CANCELED";					
+				}
+
+			}
+			
+			public function getFileString():String{
+				var fileNames:Array = getfileArray();
+				var fileString:String;
+				for( var i:uint=0; i<fileNames.length; i++ ){
+					if ( i == 0 ){
+						fileString = fileNames[i].name;
+					}
+					else{
+						fileString = fileString + "+" + fileNames[i].name;
+					}
+				}
+			return fileString; 
+			}
+		
+			
+			// Get upload progress
+			private function onUploadProgress(event:ProgressEvent):void {
+				var numPerc:Number = Math.round((event.bytesLoaded / event.bytesTotal) * 100);
+				updateProgBar(numPerc);
+				var evt:ProgressEvent = new ProgressEvent("uploadProgress", false, false, event.bytesLoaded, event.bytesTotal);
+				dispatchEvent(evt);
+			}
+			
+			// Update progBar
+			private function updateProgBar(numPerc:Number = 0):void {
+				var strLabel:String = "File-" + (_numCurrentUpload + 1); //+ "/" + _arrUploadFiles.length;
+				//strLabel = (_numCurrentUpload + 1 <= _arrUploadFiles.length && numPerc == 100) ? "Encoding... " + strLabel : strLabel;
+				strLabel = (_numCurrentUpload + 1 <= _arrUploadFiles.length && numPerc > 0 && numPerc < 100) ? strLabel +":    UPLOADING "+ numPerc + "%" : strLabel;
+				strLabel = (_numCurrentUpload + 1 >= _arrUploadFiles.length && numPerc == 100) ? "" : strLabel;
+				//strLabel = (_arrUploadFiles.length == 0) ? "ZIPPING" : strLabel;
+				progBar.label = strLabel;
+				progBar.setProgress(numPerc, 100);
+				progBar.validateNow();
+				if (_numCurrentUpload + 1 <= _arrUploadFiles.length && numPerc == 100 ){
+					progBar.indeterminate=true;
+					progBar.mode="event";				
+				}
+				else{
+					progBar.indeterminate=false;
+					progBar.mode = "manual";
+				}
+
+			}
+			
+
+			private function checkProg():void{
+				
+				var file:String = _refUploadFile.name;
+			   	var extensionIndex:Number = file.lastIndexOf( '.' );
+        		var filename:String = file.substring( 0, extensionIndex);
+        		var _strDownload:String = this.parentDocument.valueOf(_strDownload);
+				
+			    streamer = new URLStream();
+				
+			    streamer.addEventListener( ProgressEvent.PROGRESS, handleProg );
+			    streamer.addEventListener( IOErrorEvent.IO_ERROR, streamError );
+			    //trace('https://dcount.dce.harvard.edu/video/downloadQueue/'+guid+"/"+filename+".txt");
+			    streamer.load( new URLRequest(downloadDirectory+guid+"/"+filename+".txt") );
+			
+			}
+			
+			private function handleProg( e:ProgressEvent ):void {
+			    
+			    var streamer:URLStream = URLStream(e.target);
+			    interval2 = setInterval(getLine,1000);
+				var numBytes:int = 0;
+			    var prevBytes:int = 0;
+			    while( streamer.bytesAvailable > 0 ){    			       	
+			       	streamer.readBytes(ba);			       	 
+			    }
+			    var duration1:int = ba.toString().lastIndexOf("Duration: ");
+			    var duration:String = ba.toString().substring(duration1 + 10, duration1 + 21);
+			    minisec = int(duration.substring(duration.length-2));			    
+			    seconds = int(duration.substring(duration.length-5,duration.length-3)); 
+				minutes = int(duration.substring(duration.length-8,duration.length-6));
+				hours = int(duration.substring(0,duration.length-11));
+				durationInSec = (hours*60*60) + (minutes*60) + ( seconds ) + ( minisec /100 );
+			}
+			
+			
+			private function getLine():void{
+			    byteInfo = ba.toString();
+			    var infoString:String = byteInfo.substr(lastPosition);
+			    var strLabel:String = "File-" + (_numCurrentUpload);
+			    
+			    lastTime = infoString.lastIndexOf("time=");
+			    lastBitRate = infoString.lastIndexOf("bitrate");			    
+			    if ( lastPosition == 0 ){
+			    	line2 = "ENCODING...";
+			    }
+			    else{ 
+			    	line = 	infoString.substring(lastTime, lastBitRate );
+			    	
+			    	var timeInString:String = line.substring(5,line.length-1);
+			    	var hrs1:Number = int(timeInString.substring(0,1));
+			    	var hrs2:Number = int(timeInString.substring(1,2));
+			    	var min1:Number = int(timeInString.substring(3,4));
+			    	var min2:Number = int(timeInString.substring(4,5));
+			    	var sec1:Number = int(timeInString.substring(6,7));
+			    	var sec2:Number = Number(timeInString.substring(7,timeInString.length-1));
+			    	var hrs:Number  = hrs1*10 + hrs2;
+			    	var min:Number  = min1*10 + min2;
+			    	var sec:Number  = sec1*10 + sec2;
+ 
+			    	var currentTime:Number = hrs*3600 + min*60 + sec;
+			    	
+			    	if(durationInSec != 0){
+			    		var perc:Number = Math.floor(currentTime / durationInSec*100);
+			    	}
+			    	//trace(currentTime+'/'+durationInSec+'='+perc+'%');
+			    	
+			    	var line2:String;
+			    	
+			    	if (isNaN(perc) || perc <= 0 ){
+			    		line2 = "ENCODING...";
+			    	}
+			    	else{
+			    		if( perc > 99 && perc < Infinity ){ perc = 100; }
+			    		line2 = "ENCODING " + String(perc) +"%";
+			    	}
+
+			    }
+			    progBar.label = strLabel +":    "+ line2;
+			    lastPosition = lastBitRate;
+			    
+			    //lastNewLine = infoString.lastIndexOf("kbits/s");			    
+			    //lastFrame = infoString.lastIndexOf("size=");			    
+			    //lastNewLine = infoString.lastIndexOf("time=");
+			    //line = 	infoString.substring(lastFrame, lastNewLine + 7 );	
+			    //trace (infoString.substring(lastFrame, lastNewLine));			    
+			    //lastPosition = lastNewLine + 7;
+			    
+			}
+			
+			
+			private function streamError( e:Event ):void {
+				trace("IO ERROR: File stream");
+				checkProg();
+			}
+			
+			// Called on upload complete
+			private function onUploadComplete(event:Event):void {				
+				
+				trace('upload complete');
+				uploadStatus(_refUploadFile.name);	
+				
+			}
+			
+			private function uploadStatus(filename:String):void{
+				
+				var sendVars:URLVariables = new URLVariables();
+				trace(filename);
+				sendVars.file = filename;
+				sendVars.guid = guid;
+				sendVars.action ="upload_check";				
+									
+				var request:URLRequest = new URLRequest();
+				
+				request.data = sendVars;
+				request.url = _strUploadUrl;
+				request.method = URLRequestMethod.GET;
+				request.data = sendVars;	
+				
+				loader= new URLLoader();
+				loader.dataFormat = URLLoaderDataFormat.TEXT;
+				loader.addEventListener(Event.COMPLETE, uploadResponse);
+				loader.load(request);								
+				
+			}
+			
+			private function uploadResponse(e:Event):void{
+				
+				var responseTxt:String = e.target.data;
+				trace( responseTxt);
+			
+				if (responseTxt == "FILE-200"){
+					loader.close();
+					trace("upload successful");
+					startEncode(_refUploadFile.name);				
+				}
+				else{
+					setInterval( uploadStatus, 15000 );	
+				}				
+				
+			}
+			
+
+			
+			/*
+			private function onUploadCompleteData(event:Event):void {
+				trace(event.target.toString());		
+			}*/
+			
+			private function startEncode(filename:String):void{
+				
+				lastTime = 0;
+				lastBitRate = 0;
+				lastPosition = 0;
+				interval = setInterval(checkProg,1000);
+				var sendVars:URLVariables = new URLVariables();
+				trace(filename);
+				sendVars.file = filename;
+				sendVars.format = format.selectedItem.data;
+				sendVars.deinterlace = interlace.selected;
+				sendVars.bitrate = bitrate.selectedItem.data;
+				sendVars.cbr = cbr.selected;
+				sendVars.guid = guid;
+				sendVars.action ="encode";
+				
+									
+				var request:URLRequest = new URLRequest();
+				
+				request.data = sendVars;
+				request.url = _strUploadUrl;
+				request.method = URLRequestMethod.GET;
+				request.data = sendVars;	
+				
+				loader= new URLLoader();
+				loader.dataFormat = URLLoaderDataFormat.TEXT;
+				loader.addEventListener(Event.COMPLETE, encodeResponse);
+				loader.load(request);
+				
+				_numCurrentUpload++;
+				
+			}
+			
+			private function encodeResponse(evt:Event):void{
+				
+				var responseTxt:String = evt.target.data;
+				trace( responseTxt);
+			
+				if (responseTxt == "ENCODED"){
+					loader.close();
+					trace("encoding successful");
+					if (_numCurrentUpload < _arrUploadFiles.length) {
+						progBar.indeterminate = false;
+						startUpload();
+						resetEncodeData();
+						progBar.label = "ENCODING COMPLETE";
+
+					} 
+					else {
+						dispatchEvent(new Event("uploadComplete"));
+						progBar.indeterminate = false;
+						resetEncodeData();
+						progBar.label = "ENCODING COMPLETE";
+
+					}					
+				}
+				else if(responseTxt =="FAIL-ENCODE:1"){
+					var fileLoader:URLLoader = new URLLoader;
+					var file:String = _refUploadFile.name;
+			   		var extensionIndex:Number = file.lastIndexOf( '.' );
+        			var filename:String = file.substring( 0, extensionIndex);
+					fileLoader.load(new URLRequest(downloadDirectory+guid+"/"+filename+".txt"));
+					fileLoader.addEventListener(Event.COMPLETE, errorFileLoaded);
+				}
+				else{
+					setInterval( startEncode, 30000 );
+				}
+				
+			}
+			
+			private function errorFileLoaded(e:Event):void{
+				var file:String = e.target.data;
+				if( file.lastIndexOf("[") > 0 && file.lastIndexOf("[") != file.lastIndexOf("[q]") ){				
+					Alert.show("File Conversion Failed:\n"+file.substring(file.lastIndexOf("[")),"ERROR");
+					
+				}
+				else{
+					Alert.show("File Conversion Failed:\n"+file.substring(file.lastIndexOf("Error")),"ERROR");
+				}
+				
+				deleteTemp();				
+				progBar.indeterminate = false;					
+				progBar.label = "ENCODING ERROR";
+				clearUpload();
+			}
+			
+			public function resetEncodeData():void{
+				hours = 0;
+				minutes = 0;
+				seconds = 0;
+				minisec = 0;
+				durationInSec = 0;
+				lastPosition = 0;
+				lastBitRate = 0;
+				lastTime = 0;
+				encodeDone = true;
+				//progBar.label = "ENCODING COMPLETE";
+				var i:int = setInterval(function():void{},100) + 1
+				while(i--){
+					clearInterval(i)
+				}
+				ba = new ByteArray(); 		
+			}
+			
+			public function resetUploads():void{
+				enableUI();
+				//clearUpload();
+			}
+			
+			
+			// Called on upload io error
+			private function onUploadIoError(event:IOErrorEvent):void {
+				clearUpload();
+				var evt:IOErrorEvent = new IOErrorEvent("uploadIoError", false, false, event.text);
+				trace ('event.txt');
+				dispatchEvent(evt);
+			}
+			
+			// Called on upload security error
+			private function onUploadSecurityError(event:SecurityErrorEvent):void {
+				clearUpload();
+				var evt:SecurityErrorEvent = new SecurityErrorEvent("uploadSecurityError", false, false, event.text);
+				dispatchEvent(evt);
+			}
+			
+			// Change view state
+			private function changeView():void {
+				currentState = (currentState == "mini") ? "" : "mini";
+			}
+			
+			public function getfileArray():Array{
+				return _arrUploadFiles;				
+			}
+			public function getGUID():String{
+				return guid;				
+			}
+			public function popQueue():void{
+				try{
+				for ( var i:uint = _arrUploadFiles.length; i>0; i--){
+					_arrUploadFiles.pop();	
+				}  
+				}
+				catch(e:Error){
+					trace(e.errorID + ": " + e.message);
+				}
+			}
+		]]>
+	</mx:Script>
+    
+	<mx:states>
+		<mx:State name="mini">
+			<mx:SetProperty name="height" value="60"/>
+			<mx:SetProperty name="minHeight" value="60"/>
+			<mx:SetStyle target="{btnView}" name="icon" value="@Embed('assets/application_put.png')"/>
+		</mx:State>
+	</mx:states>
+	
+	<mx:transitions>
+		<mx:Transition fromState="*" toState="*">
+			<mx:Resize target="{this}" duration="1000"/>
+		</mx:Transition>
+	</mx:transitions>
+	<mx:ApplicationControlBar width="100%" fillAlphas="[1.0, 1.0]" fillColors="[#2A2A2A, #565353]" alpha="1.0">
+		<mx:Button id="btnAdd" toolTip="Add file(s)" click="addFiles()" icon="@Embed('assets/add.png')" width="26" fillAlphas="[1.0, 1.0]" fillColors="[#403E3E, #403E3E]" borderColor="#667775" themeColor="#41C0D3"/>
+		<mx:Button id="btnRemove" toolTip="Remove file(s)" click="removeFiles()" icon="@Embed(source='assets/delete.png')" width="26" fillAlphas="[1.0, 1.0]" fillColors="[#403E3E, #403E3E]" borderColor="#667775" themeColor="#41C0D3"/>
+		<mx:ProgressBar id="progBar" mode="manual" label="" labelPlacement="center" width="100%" borderColor="#9CC5C7" alpha="0.2" color="#9BDFED" themeColor="#19BBDE" indeterminateMoveInterval="30" />
+		<mx:Button id="btnCancel" toolTip="Cancel upload" icon="@Embed('assets/cancel2.png')" width="101" click="onUploadCanceled()" fillAlphas="[1.0, 1.0]" fillColors="[#403E3E, #403E3E, #8A8585, #8A8585]" borderColor="#667775" themeColor="#41C0D3" label="Cancel"/>
+	</mx:ApplicationControlBar>
+	
+	<mx:Canvas width="100%" height="100%">
+		<mx:DataGrid id="listFiles" left="0" top="0" bottom="0" right="0"
+			allowMultipleSelection="true" verticalScrollPolicy="on"
+			draggableColumns="false" resizableColumns="false" sortableColumns="false" color="#398A9B" alternatingItemColors="[#D9E8EA, #C3E2E1]">
+			<mx:columns>
+				<mx:DataGridColumn headerText="File" dataField="name" wordWrap="true"/>
+				<mx:DataGridColumn headerText="Size" dataField="size" width="75" textAlign="right"/>
+			</mx:columns>
+		</mx:DataGrid>
+	</mx:Canvas>
+	<mx:ControlBar horizontalAlign="center" verticalAlign="middle">
+				<mx:ApplicationControlBar width="100%" fillAlphas="[1.0, 1.0]" fillColors="[#444141, #15171E]">
+					<mx:ComboBox themeColor="#41C0D3" id="format"  color="#323131">
+						<mx:ArrayCollection>
+						  			<mx:Object label="MOV" data="mov"/>
+						  			<mx:Object label="AVI" data="avi"/>
+						  			<mx:Object label="FLV" data="flv"/>
+						  			<mx:Object label="MP4" data="mp4"/>
+						  			<mx:Object label="MPEG" data="mpeg"/>
+						  			<mx:Object label="AIFF" data="aiff"/>
+						  			<mx:Object label="WAV" data="wav"/>
+						  			<mx:Object label="MP3" data="mp3"/>
+						  			<mx:Object label="SWF" data="swf"/>
+								</mx:ArrayCollection>
+					</mx:ComboBox>
+					<mx:ComboBox themeColor="#41C0D3" id="bitrate" color="#323131">
+					      <mx:ArrayCollection>
+					        <mx:Object data="same" label="Same as Source"/>
+					              <mx:Object data="low" label="Low: 200k"/>
+					              <mx:Object data="med" label="Medium: 900k"/>
+					              <mx:Object data="high" label="High: 4000k"/>
+					      </mx:ArrayCollection>
+					</mx:ComboBox>
+					<mx:CheckBox label="De-interlace" themeColor="#41C0D3" fillAlphas="[1.0, 1.0, 1.0, 1.0]" alpha="1.0" fontWeight="bold" id="interlace" selected="false"/>
+					<mx:CheckBox label="Constant bitrate" themeColor="#41C0D3" fillAlphas="[1.0, 1.0, 1.0, 1.0]" fontWeight="bold" id="cbr"/>
+					<mx:Button label="Convert" toolTip="Upload file(s)" id="btnUpload" click="startUpload()" icon="@Embed('assets/bullet_go.png')" fillAlphas="[1.0, 1.0]" fillColors="[#403E3E, #403E3E]" borderColor="#667775" themeColor="#41C0D3"/>
+					<mx:Spacer width="100%"/>
+					<mx:Button id="btnView" toolTip="Show/Hide file(s)" icon="@Embed('assets/application_get.png')" width="26" click="changeView()" fillAlphas="[1.0, 1.0]" fillColors="[#403E3E, #353839]" borderColor="#667775"/>
+				</mx:ApplicationControlBar>
+	</mx:ControlBar>	
+</mx:Panel>

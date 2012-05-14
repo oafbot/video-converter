@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Application xmlns:mx="http://www.adobe.com/2006/mxml" xmlns:com="com.flashdev.file.*" xmlns:download="com.download.*" xmlns:guid="com.guid.*" layout="vertical"
+	creationComplete="initApp()" backgroundColor="#0E556D" backgroundGradientAlphas="[1.0, 1.0]" backgroundGradientColors="[#67E5F4, #0E556D]" viewSourceURL="srcview/index.html">
+	
+	<mx:Script>
+		<![CDATA[
+		
+			import mx.controls.Alert;
+			
+			private const _strDomain:String = new String("http://platypo.us:8010/");
+			private const _strUploadScript:String = new String(_strDomain + "video/converter/scripts/converter.php");
+			private const _strDownload:String = new String(_strDomain+'download/');
+			private const _strDownloadScript:String = new String(_strDomain+'video/converter/scripts/download.php');
+			private var fileNames:Array;
+			private var fileString:String;
+			private var conversionFormat:String;
+			private var guid:String;
+			private var request:URLRequest;
+			private var requestVars:URLVariables;
+			private var loader:URLLoader;
+			
+			
+			// Initalize
+			private function initApp():void {
+				Security.allowDomain(_strDomain);
+				this.addEventListener('uploadCancel',cancelHandler);
+			}
+			public function initDownload():void{
+				//fileUpload.getfileArray();
+				fileNames = fileUpload.getfileArray();
+				//var uniqueId:String = GUID.create();
+				guid = fileUpload.getGUID();
+				conversionFormat = fileUpload.format.selectedItem.data;
+				fileDownload.init(fileUpload.progBar, fileUpload.btnCancel, _strDownload, _strDownloadScript, fileNames, conversionFormat, guid);				
+			}
+			public function makeGUID():String{
+				return GUID.create();	
+			}
+			
+			public function cancelHandler(e:Event):void{
+				var ref:URLRequest = new URLRequest("javascript:location.reload(true)");
+				navigateToURL(ref, "_self");
+			}
+			
+			public function fileExists():void{										
+				
+				initDownload();
+				
+				fileString = fileDownload.getFileString();
+				
+            	request = new URLRequest();
+            	request.url = _strDownloadScript;
+            	
+            	requestVars = new URLVariables();			
+				requestVars.action = "exists";
+				requestVars.files = fileString;
+				requestVars.format = conversionFormat;
+				requestVars.guid = guid;
+				request.data = requestVars;           
+            
+            	loader = new URLLoader();
+				loader.dataFormat = URLLoaderDataFormat.TEXT;
+				loader.addEventListener(Event.COMPLETE, requestComplete);
+            	//loader.addEventListener(IOErrorEvent.IO_ERROR, onIOError);
+				loader.load(request);
+			}
+			
+			private function requestComplete(evt:Event):void {
+				var responseTxt:String = evt.target.data;
+				trace( responseTxt);
+			
+				if (responseTxt == "FILES-EXIST"){
+					loader.close();
+					trace("files exist");
+					fileUpload.resetUploads();
+					fileUpload.resetEncodeData();
+					fileDownload.startDownload();
+				}
+				else{
+					setInterval( fileExists, 15000 );	
+				}
+			}      		
+								
+
+		]]>
+	</mx:Script>
+	<download:FileDownload id="fileDownload" />
+	<guid:GUID />
+	<mx:Canvas width="700" borderThickness="0">
+		<com:FileUpload id="fileUpload"
+			width="100%" height="400"			
+			uploadUrl="{_strUploadScript}"
+			uploadComplete="fileExists()" 
+			uploadIOError="Alert.show('IO Error in uploading file.', 'Error')" 
+			uploadSecurityError="Alert.show('Security Error in uploading file.', 'Error')" borderColor="#353434" alpha="1.0" borderStyle="none" borderThickness="2" color="#45B1C8" cornerRadius="15" backgroundAlpha="1.0" verticalCenter="0" horizontalCenter="0"/>
+	</mx:Canvas>
+</mx:Application>
